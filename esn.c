@@ -21,17 +21,17 @@ checkreplaywindow(struct tdb *tdb, u_int32_t seq, u_int32_t *seqhigh,
 {
 	u_int32_t	tl, th, wl;
 	u_int32_t	diff, packet, seqh, window;
-	int		idx, esn;
+	int		idx, esn = tdb->tdb_flags & TDBF_ESN;
 
 	tl = (u_int32_t)tdb->tdb_rpl;
 	th = (u_int32_t)(tdb->tdb_rpl >> 32);
 
 	/* Zero SN is not allowed */
-	if (seq == 0 && tl == 0 && th == 0)
+	if ((esn && seq == 0 && tl == 0 && th == 0) ||
+	    (!esn && seq == 0))
 		return (1);
 
 	window = TDB_REPLAYMAX - TDB_REPLAYWASTE;
-	esn = tdb->tdb_flags & TDBF_ESN;
 
 	/* Current replay window starts here */
 	wl = tl - window + 1;
@@ -66,7 +66,7 @@ checkreplaywindow(struct tdb *tdb, u_int32_t seq, u_int32_t *seqhigh,
 
 	/* Can't wrap if not doing ESN */
 	if (!esn)
-		return (1);
+		return (2);
 
 	/*
 	 * SN is within [wl, 0xffffffff] and wl is within
@@ -104,4 +104,3 @@ checkreplaywindow(struct tdb *tdb, u_int32_t seq, u_int32_t *seqhigh,
 
 	return (0);
 }
-
