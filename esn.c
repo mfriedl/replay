@@ -1,38 +1,50 @@
-static __inline void
-setreplay(struct tdb *tdb, int idx, u_int32_t diff, u_int32_t packet,
-    int wupdate)
-{
-	if (wupdate) {
-		if (diff < TDB_REPLAYMAX - TDB_REPLAYWASTE) {
-			int i = (tdb->tdb_rpl % TDB_REPLAYMAX) / 32;
-			while (i != idx) {
-				i = (i + 1) % howmany(TDB_REPLAYMAX, 32);
-				tdb->tdb_seen[i] = 0;
-			}
-		} else
-			memset(tdb->tdb_seen, 0, sizeof(tdb->tdb_seen));
-	}
-	tdb->tdb_seen[idx] |= packet;
-}
+#define SEEN_SIZE	howmany(TDB_REPLAYMAX, 32)
 
+#define CHECKREPLAY() ({					\
+		if (tdb->tdb_seen[idx] & packet)		\
+			return (3);				\
+	})
+
+#define SETREPLAY()	tdb->tdb_seen[idx] |= packet
+
+#define UPDATERPL(s)	tdb->tdb_rpl = s
+
+#define UPDATEWND()	({					\
+		int 	i = (tl % TDB_REPLAYMAX) / 32;\
+								\
+		while (i != idx) {				\
+			i = (i + 1) % SEEN_SIZE;		\
+			tdb->tdb_seen[i] = 0;			\
+		}						\
+	})
+
+#define CLEARWND()	bzero(tdb->tdb_seen, sizeof(tdb->tdb_seen))
+
+/*
+ * return 0 on success
+ * return 1 for counter == 0
+ * return 2 for very old packet
+ * return 3 for packet within current window but already received
+ */
 int
 checkreplaywindow(struct tdb *tdb, u_int32_t seq, u_int32_t *seqhigh,
     int commit)
 {
 	u_int32_t	tl, th, wl;
-	u_int32_t	diff, packet, seqh, window;
+	u_int32_t	seqh, packet;
+	u_int32_t	window = TDB_REPLAYMAX - TDB_REPLAYWASTE;
 	int		idx, esn = tdb->tdb_flags & TDBF_ESN;
 
 	tl = (u_int32_t)tdb->tdb_rpl;
 	th = (u_int32_t)(tdb->tdb_rpl >> 32);
 
 	/* Zero SN is not allowed */
-	if ((esn && seq == 0 && tl == 0 && th == 0) ||
+	if ((esn && seq == 0 && tl <= AH_HMAC_INITIAL_RPL && th == 0) ||
 	    (!esn && seq == 0))
 		return (1);
 
-	window = TDB_REPLAYMAX - TDB_REPLAYWASTE;
-
+	if (th == 0 && tl < window)
+		window = tl;
 	/* Current replay window starts here */
 	wl = tl - window + 1;
 
@@ -47,19 +59,22 @@ checkreplaywindow(struct tdb *tdb, u_int32_t seq, u_int32_t *seqhigh,
 	 */
 	if ((tl >= window - 1 && seq >= wl) ||
 	    (tl <  window - 1 && seq <  wl)) {
-		seqh = th;
+		seqh = *seqhigh = th;
 		if (seq > tl) {
 			if (commit) {
-				setreplay(tdb, idx, seq - tl, packet, 1);
-				tdb->tdb_rpl = seq;
+				if (seq - tl > window)
+					CLEARWND();
+				else
+					UPDATEWND();
+				SETREPLAY();
+				UPDATERPL(((u_int64_t)seqh << 32) | seq);
 			}
 		} else {
 			if (tl - seq >= window)
 				return (2);
-			if (tdb->tdb_seen[idx] & packet)
-				return (3);
+			CHECKREPLAY();
 			if (commit)
-				setreplay(tdb, idx, tl - seq, packet, 0);
+				SETREPLAY();
 		}
 		return (0);
 	}
@@ -75,13 +90,12 @@ checkreplaywindow(struct tdb *tdb, u_int32_t seq, u_int32_t *seqhigh,
 	 * subspace.
 	 */
 	if (tl < window - 1 && seq >= wl) {
-		seqh = th - 1;
-		diff = (u_int32_t)((((u_int64_t)th << 32) | tl) -
-		    (((u_int64_t)seqh << 32) | seq));
-		if (tdb->tdb_seen[idx] & packet)
-			return (3);
+		CHECKREPLAY();
+		if (*seqhigh == 0)
+			return (4);
+		seqh = *seqhigh = th - 1;
 		if (commit)
-			setreplay(tdb, idx, diff, packet, 0);
+			SETREPLAY();
 		return (0);
 	}
 
@@ -89,17 +103,16 @@ checkreplaywindow(struct tdb *tdb, u_int32_t seq, u_int32_t *seqhigh,
 	 * SN has wrapped and the last authenticated SN is in the old
 	 * subspace.
 	 */
-	if (tl + seq + 1 >= window + 1)
-		return (2);
 	seqh = *seqhigh = th + 1;
 	if (seqh == 0)		/* Don't let high bit to wrap */
 		return (1);
-
 	if (commit) {
-		diff = (u_int32_t)((((u_int64_t)seqh << 32) | seq) -
-		    (((u_int64_t)th << 32) | tl));
-		setreplay(tdb, idx, diff, packet, 0);
-		tdb->tdb_rpl = ((u_int64_t)seqh << 32) | seq;
+		if (seq - tl > window)
+			CLEARWND();
+		else
+			UPDATEWND();
+		SETREPLAY();
+		UPDATERPL(((u_int64_t)seqh << 32) | seq);
 	}
 
 	return (0);

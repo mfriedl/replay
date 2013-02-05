@@ -22,7 +22,7 @@ checkreplaywindow(struct tdb *tdb, u_int32_t seq, u_int32_t *seqhigh,
 			} else {
 				i = (tdb->tdb_rpl % TDB_REPLAYMAX)/32;
 				while (i != idx) {
-					i = (i+1) % (TDB_REPLAYMAX/32);
+					i = (i+1) % howmany(TDB_REPLAYMAX, 32);
 					tdb->tdb_seen[i] = 0;
 				}
 			}

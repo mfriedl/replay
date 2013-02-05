@@ -13,7 +13,7 @@
 #define	TDB_REPLAYWASTE 32
 #endif
 #ifndef TDB_REPLAYMAX
-#define TDB_REPLAYMAX	(2048+TDB_REPLAYWASTE)
+#define TDB_REPLAYMAX	(2100+TDB_REPLAYWASTE)
 #endif
 
 #ifndef AH_HMAC_INITIAL_RPL
@@ -39,12 +39,11 @@ struct tdb {
 int called;
 int fail;
 int maxwin = TDB_REPLAYMAX;
+u_int32_t esn = 0;
 
 static int
 checkreplay(struct tdb *tdb, u_int32_t seq)
 {
-	u_int32_t	esn;
-
 	called++;
 	return (checkreplaywindow(tdb, seq, &esn, 1));
 }
@@ -62,7 +61,7 @@ teq(int should, int have, const char *fmt, ...)
 		va_end(args);
 		fprintf(stderr, " [rpl %llu/%llu/%llu]\n",
 		    tdb.tdb_rpl, (tdb.tdb_rpl%TDB_REPLAYMAX)/32, tdb.tdb_rpl&31);
-		for (i = 0; i < TDB_REPLAYMAX/32; i++)
+		for (i = 0; i < howmany(TDB_REPLAYMAX, 32); i++)
 			fprintf(stderr, "%d: %8.8x\n", i, tdb.tdb_seen[i]);
 		fail++;
 	}
@@ -157,6 +156,31 @@ runtests(void)
 		else
 			done =1;
 	}
+
+#ifdef ESN
+	tdb_reset();
+	tdb.tdb_flags |= TDBF_ESN;
+
+	for (i = 0xffffffff - maxwin / 2; i != maxwin / 2 - 1; i++)
+		teq(0, checkreplay(&tdb, i), "ok %#x", i);
+
+	teq(1, esn, "esn %d", esn);
+
+	for (i = 0xffffffff - maxwin / 2; i != maxwin / 2 - 1; i++)
+		teq(3, checkreplay(&tdb, i), "dup %#x", i);
+
+	teq(3, checkreplay(&tdb, 0), "dup zero");
+
+	teq(1, esn, "esn %d", esn);
+
+	teq(0, checkreplay(&tdb, maxwin / 2), "ok %d", maxwin / 2);
+
+	for (i = maxwin; i < maxwin * 3; i++)
+		teq(0, checkreplay(&tdb, i), "ok clearmany %d", i);
+	for (i = i - maxwin; i < maxwin * 3; i++)
+		teq(3, checkreplay(&tdb, i), "dup %d", i);
+	teq(1, esn, "esn %d", esn);
+#endif
 }
 
 int
