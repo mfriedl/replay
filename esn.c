@@ -1,25 +1,5 @@
 #define SEEN_SIZE	howmany(TDB_REPLAYMAX, 32)
 
-#define CHECKREPLAY() ({					\
-		if (tdb->tdb_seen[idx] & packet)		\
-			return (3);				\
-	})
-
-#define SETREPLAY()	tdb->tdb_seen[idx] |= packet
-
-#define UPDATERPL(s)	tdb->tdb_rpl = s
-
-#define UPDATEWND()	({					\
-		int 	i = (tl % TDB_REPLAYMAX) / 32;\
-								\
-		while (i != idx) {				\
-			i = (i + 1) % SEEN_SIZE;		\
-			tdb->tdb_seen[i] = 0;			\
-		}						\
-	})
-
-#define CLEARWND()	bzero(tdb->tdb_seen, sizeof(tdb->tdb_seen))
-
 /*
  * return 0 on success
  * return 1 for counter == 0
@@ -63,18 +43,26 @@ checkreplaywindow(struct tdb *tdb, u_int32_t seq, u_int32_t *seqhigh,
 		if (seq > tl) {
 			if (commit) {
 				if (seq - tl > window)
-					CLEARWND();
-				else
-					UPDATEWND();
-				SETREPLAY();
-				UPDATERPL(((u_int64_t)seqh << 32) | seq);
+					bzero(tdb->tdb_seen,
+					    sizeof(tdb->tdb_seen));
+				else {
+					int i = (tl % TDB_REPLAYMAX) / 32;
+
+					while (i != idx) {
+						i = (i + 1) % SEEN_SIZE;
+						tdb->tdb_seen[i] = 0;
+					}
+				}
+				tdb->tdb_seen[idx] |= packet;
+				tdb->tdb_rpl = ((u_int64_t)seqh << 32) | seq;
 			}
 		} else {
 			if (tl - seq >= window)
 				return (2);
-			CHECKREPLAY();
+			if (tdb->tdb_seen[idx] & packet)
+				return (3);
 			if (commit)
-				SETREPLAY();
+				tdb->tdb_seen[idx] |= packet;
 		}
 		return (0);
 	}
@@ -90,12 +78,11 @@ checkreplaywindow(struct tdb *tdb, u_int32_t seq, u_int32_t *seqhigh,
 	 * subspace.
 	 */
 	if (tl < window - 1 && seq >= wl) {
-		CHECKREPLAY();
-		if (*seqhigh == 0)
-			return (4);
+		if (tdb->tdb_seen[idx] & packet)
+			return (3);
 		seqh = *seqhigh = th - 1;
 		if (commit)
-			SETREPLAY();
+			tdb->tdb_seen[idx] |= packet;
 		return (0);
 	}
 
@@ -108,11 +95,17 @@ checkreplaywindow(struct tdb *tdb, u_int32_t seq, u_int32_t *seqhigh,
 		return (1);
 	if (commit) {
 		if (seq - tl > window)
-			CLEARWND();
-		else
-			UPDATEWND();
-		SETREPLAY();
-		UPDATERPL(((u_int64_t)seqh << 32) | seq);
+			bzero(tdb->tdb_seen, sizeof(tdb->tdb_seen));
+		else {
+			int i = (tl % TDB_REPLAYMAX) / 32;
+
+			while (i != idx) {
+				i = (i + 1) % SEEN_SIZE;
+				tdb->tdb_seen[i] = 0;
+			}
+		}
+		tdb->tdb_seen[idx] |= packet;
+		tdb->tdb_rpl = ((u_int64_t)seqh << 32) | seq;
 	}
 
 	return (0);
